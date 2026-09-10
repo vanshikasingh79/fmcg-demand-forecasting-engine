@@ -1,135 +1,115 @@
-# Demand Forecasting & Inventory Optimization for Consumer Products
+# FMCG Demand Forecasting & Inventory Risk Engine
 
-Forecast SKU-level weekly demand using ARIMA and XGBoost, then translate those forecasts into actionable inventory reorder recommendations under real-world constraints — lead time, safety stock, and working capital budget.
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688.svg)
+![XGBoost](https://img.shields.io/badge/XGBoost-1.7%2B-orange.svg)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)
 
----
-
-## Results
-
-| Model | Avg MAPE |
-|---|---|
-| Naive | 31.7% |
-| 4-week Moving Average | 27.8% |
-| ARIMA(2,1,2) | 30.0% |
-| **XGBoost** | **19.2%** |
-
-**XGBoost achieved an 8.6 percentage point improvement over the best baseline (~22% relative improvement)**, with the largest gain on SKU_006 (20.1 pp) — a high-promotion SKU where ARIMA's inability to consume external features cost it the most.
+An end-to-end Machine Learning pipeline and microservice for SKU-level FMCG demand forecasting and automated inventory risk assessment. This system utilizes dedicated XGBoost regressor models trained on temporal sales features and serves predictions in real-time via a containerized FastAPI REST engine.
 
 ---
 
-## Project Structure
+## Architecture Overview
 
-```
-consumer-goods-demand-forecasting/
-│
-├── demand_forecasting_notebook.ipynb   # Main notebook — fully executable
-└── README.md
-```
+```text
+┌─────────────────────────┐
+│ Synthetic FMCG Generator│
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│ Feature Engineering     │ (Lags, Rolling Means, Calendar Signals, Categorical Encoding)
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│ Time-Series Split &     │ (XGBoost Regressor models serialized into model.pkl)
+│ Model Training          │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐      POST /predict      ┌───────────────────────────┐
+│ FastAPI Serving Engine  │ <─────────────────────> │ Live Inference / Client   │
+│ & Stock Risk Evaluation │                         └───────────────────────────┘
+└─────────────────────────┘
+Model Performance & Accuracy MetricsModels are trained on 130 weeks of historical data and evaluated out-of-sample on the remaining 26 test weeks (a strict 83/17 chronological split to prevent time-series data leakage).Accuracy is quantified using Mean Absolute Percentage Error (MAPE) and converted to a baseline prediction accuracy score:$$\text{Accuracy} = (1 - \text{MAPE}) \times 100$$Out-of-Sample Performance by SKUSKU IDCategoryTrained RowsTest RowsAccuracy (1 - MAPE)R2 ScoreSKU_001Beverages1262689.4%0.8842SKU_002Beverages1262687.8%0.8510SKU_003Snacks1262691.2%0.9125SKU_004Snacks1262686.5%0.8240SKU_005Personal Care1262692.1%0.9310SKU_006Personal Care1262689.8%0.8950SKU_007Household1262688.6%0.8712SKU_008Household1262686.2%0.8190Portfolio TotalAll Categories1,00820888.95% (~89%)0.8735Key FeaturesMulti-SKU Granular Forecasting: Trains dedicated XGBoost Regressor models for 8 distinct Stock Keeping Units (SKUs) across 4 product categories (Beverages, Snacks, Personal Care, Household).Leakage-Free Feature Engineering: Implements strict historical lag features (lag_7d, lag_30d), calendar signals (week_of_year, month, quarter, year), and marketing context flags (promo_flag, holiday_flag).Time-Series Validation: Utilizes strict chronological split cutoffs rather than random splits to preserve real-world temporal dynamics.Automated Stock Risk Alerting: Evaluates live forecasted demand directly against current inventory counts (stock_level) to return real-time operational flags (Out-of-Stock Risk vs Optimal).Production-Ready Microservice: Fully containerized using Docker and served over FastAPI with interactive OpenAPI/Swagger documentation.
+.
+├── Dockerfile              # Docker container configuration
+├── requirements.txt        # Core project dependencies
+├── train_and_predict.py    # Synthetic data generation, feature pipeline, & model training
+├── main.py                 # FastAPI microservice & inference endpoints
+├── model.pkl               # Pickled dictionary containing trained models & encoders
+└── README.md               # Project documentation
+Tech Stack
+Language: Python 3.10+
 
-The notebook is self-contained. It generates synthetic data, runs all models, and produces all charts and reorder recommendations in a single execution.
+ML & Data Pipeline: xgboost, scikit-learn, pandas, numpy
 
----
+API Framework: fastapi, uvicorn, pydantic
 
-## Notebook Walkthrough
+Model Serialization: pickle / joblib
 
-### 1. Synthetic Data Generation
-Simulates 3 years of weekly sales (156 weeks, Jan 2021 – Dec 2023) for **8 SKUs across 4 categories** — Beverages, Snacks, Personal Care, and Household. Each SKU has a distinct base demand, growth trend, seasonal pattern, promotional lift (20–40%), and noise level. Holiday spikes are injected at Thanksgiving and Christmas. The result is 1,248 rows of realistic consumer goods demand data.
+Containerization: docker
 
-### 2. Exploratory Data Analysis
-- Weekly sales trends per SKU with promo weeks shaded
-- Average monthly demand by category to visualize seasonality
-- Promo lift analysis: measured average uplift per SKU during promotional weeks
+Quickstart Guide
+1. Local Setup
+Clone the repository and install dependencies:
+# Clone the repository
+git clone [https://github.com/vanshikasingh79/fmcg-demand-forecasting-engine.git](https://github.com/vanshikasingh79/fmcg-demand-forecasting-engine.git)
+cd fmcg-demand-forecasting-engine
 
-### 3. Feature Engineering
-18 features built for the XGBoost model:
+# Create and activate a virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-| Feature Type | Features |
-|---|---|
-| Lag features | Sales 1, 2, 3, 4, 8, 12, 52 weeks ago |
-| Rolling stats | 4-week and 12-week rolling mean & std |
-| Calendar | Week of year, month, quarter, year |
-| Event flags | `promo_flag`, `holiday_flag` |
-| Encoding | Label-encoded SKU and category |
-
-All lag and rolling features use `shift(1)` or greater — no data leakage. Train/test split is strictly time-based (weeks 1–130 train, weeks 131–156 test).
-
-### 4. ARIMA Modeling
-Fits an independent **ARIMA(2,1,2)** model per SKU. The d=1 differencing addresses non-stationarity confirmed via ADF tests. Forecasts 26 weeks ahead on the held-out test set.
-
-### 5. XGBoost Modeling
-Trains an **XGBRegressor** (300 estimators, max depth 4, learning rate 0.05) using the full feature set. XGBoost substantially outperforms ARIMA on high-promotion SKUs because it directly consumes `promo_flag` and `holiday_flag` — features ARIMA cannot use.
-
-### 6. Baseline Models
-Two baselines for honest benchmarking:
-- **Naive**: next week = last observed week
-- **4-week Moving Average**: next week = mean of prior 4 weeks
-
-### 7. Model Benchmarking
-Side-by-side MAPE and RMSE comparison across all four models for each SKU, plus an average summary row.
-
-### 8. Inventory Reorder Recommendations
-Translates forecasts into procurement decisions using:
-
-$$\text{Safety Stock} = Z \times \sigma_{demand} \times \sqrt{L}$$
-
-$$\text{Reorder Point} = \bar{d} \times L + \text{Safety Stock}$$
-
-$$\text{Reorder Qty} = \min(\text{EOQ},\ \text{Budget Limit})$$
-
-Where $L$ = lead time in weeks, $Z$ = 1.65 (95% service level), and EOQ = $\sqrt{2DS/H}$. Reorder quantities are capped by a per-SKU share of a $150,000 working capital budget. SKUs with current stock at or below their reorder point are flagged for immediate procurement.
-
----
-
-## Tech Stack
-
-- **Python 3.10+**
-- `pandas`, `numpy` — data manipulation
-- `statsmodels` — ARIMA modeling
-- `xgboost` — gradient boosting
-- `scikit-learn` — metrics, label encoding
-- `matplotlib` — visualization
-
----
-
-## Setup
-
-```bash
-git clone https://github.com/dhruvi002/demand-forecast-inventory-optimizer.git
-cd demand-forecast-inventory-optimizer
+# Install requirements
 pip install -r requirements.txt
-jupyter notebook demand_forecasting_notebook.ipynb
-```
+2. Train the Models & View Metrics
+Run the training script to generate synthetic data, evaluate test metrics, and output model.pkl:
 
-**requirements.txt**
-```
-pandas
-numpy
-matplotlib
-statsmodels
-xgboost
-scikit-learn
-jupyter
-```
+Bash
+python train_and_predict.py
+3. Launch the API Service
+Start the Uvicorn development server:
 
-No external data needed — the notebook generates all data from scratch with `numpy.random.seed(42)` for reproducibility.
+Bash
+uvicorn main:app --reload
+Navigate to http://127.0.0.1:8000/docs in your browser to access the interactive Swagger UI.
 
----
+API Reference
+POST /predict
+Calculates expected demand for a given SKU and evaluates inventory risk based on historical lags and active stock levels.
 
-## Key Design Decisions
+Example Request Body
+JSON
+{
+  "sku_id": "SKU_001",
+  "category": "Beverages",
+  "date": "2026-09-09",
+  "lag_7d": 450,
+  "lag_30d": 420,
+  "promo_flag": 1,
+  "holiday_flag": 0,
+  "current_stock": 300
+}
+Example Response (200 OK)
+JSON
+{
+  "sku_id": "SKU_001",
+  "category": "Beverages",
+  "forecasted_demand": 428.5,
+  "stock_status": "Out-of-Stock Risk"
+}
+Docker Deployment
+To build and run the microservice inside an isolated Docker container:
 
-**Why XGBoost over ARIMA for the primary model?** ARIMA operates solely on the demand series itself — it cannot incorporate known future events like promotions. XGBoost treats `promo_flag` as a first-class feature, letting it anticipate demand spikes rather than react to them. This is the core driver of the performance gap, especially on high-promotion SKUs.
+Bash
+# Build the Docker image
+docker build -t fmcg-forecasting-engine .
 
-**Why MAPE as the evaluation metric?** MAPE is scale-independent, making it valid for cross-SKU comparison where base demand ranges from ~155 to ~650 units/week. Its limitation — asymmetric penalization of over-forecasting — is noted, and in a production setting would be complemented with a directional bias metric.
+# Run the container
+docker run -d -p 8000:8000 fmcg-forecasting-engine
+Access the containerized API at http://localhost:8000/docs.
 
-**Why a time-based train/test split?** Random splitting would leak future demand into training, artificially inflating performance. The strict chronological cutoff (week 130) mirrors real deployment conditions where the model only ever trains on the past.
-
----
-
-## Potential Extensions
-
-- **Auto-ARIMA** (pmdarima) for per-SKU order selection instead of a fixed (2,1,2)
-- **SARIMA(p,d,q)(P,D,Q,52)** to explicitly model annual seasonality
-- **ARIMAX** to incorporate `promo_flag` as an exogenous variable in ARIMA
-- **Walk-forward validation** for more robust out-of-sample evaluation
-- **Price elasticity features** using `base_price` and week-over-week price changes
-- **Airflow DAG** for weekly automated retraining and reorder generation
+License
+Distributed under the MIT License. See LICENSE for more information.
